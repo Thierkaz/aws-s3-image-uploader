@@ -27,11 +27,17 @@
         .image-card .info { padding: 0.8rem; }
         .image-card .info p { font-size: 0.85rem; color: #666; margin-bottom: 0.5rem;
                               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .image-card .info { display: flex; align-items: center; justify-content: space-between; }
         .image-card .info a { color: #0073bb; text-decoration: none; font-size: 0.9rem; }
         .image-card .info a:hover { text-decoration: underline; }
+        .image-card .info .btn-delete-card {
+            background: none; border: none; color: #e74c3c; cursor: pointer;
+            font-size: 1.1rem; padding: 0.2rem 0.4rem; line-height: 1;
+        }
+        .image-card .info .btn-delete-card:hover { color: #c0392b; }
         .no-creds { text-align: center; padding: 2rem; color: #856404; }
 
-        /* --- Modale fullscreen --- */
+        /* --- Modale fullscreen + slider --- */
         .modal-overlay {
             display: none; position: fixed; inset: 0; z-index: 1000;
             background: rgba(0,0,0,0.9); justify-content: center; align-items: center;
@@ -52,12 +58,35 @@
         .modal-img-container {
             flex: 1; display: flex; justify-content: center; align-items: center;
             overflow: auto; width: 100%; padding: 3.5rem 1rem 1rem;
+            position: relative;
         }
         .modal-img-container img.fit {
             max-width: 100%; max-height: calc(100vh - 4.5rem); object-fit: contain;
         }
         .modal-img-container img.full {
             max-width: none; max-height: none;
+        }
+        .slider-arrow {
+            position: fixed; top: 50%; transform: translateY(-50%); z-index: 1002;
+            background: rgba(255,255,255,0.15); color: white; border: 1px solid rgba(255,255,255,0.3);
+            font-size: 2rem; width: 50px; height: 70px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 4px; transition: background 0.2s;
+            padding: 0; line-height: 1;
+        }
+        .slider-arrow:hover { background: rgba(255,255,255,0.3); }
+        .slider-arrow.prev { left: 1rem; }
+        .slider-arrow.next { right: 1rem; }
+        .slider-arrow:disabled { opacity: 0.2; cursor: default; }
+        .modal-spinner {
+            position: absolute; inset: 0; display: none;
+            justify-content: center; align-items: center;
+            color: white; font-size: 1.2rem;
+        }
+        .modal-spinner.active { display: flex; }
+        .modal-counter {
+            position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
+            color: rgba(255,255,255,0.6); font-size: 0.85rem; z-index: 1001;
         }
     </style>
 </head>
@@ -99,10 +128,14 @@
                 <img src="{{ img.view_url }}" alt="{{ img.filename }}"
                      data-view="{{ img.view_url }}"
                      data-download="{{ img.download_url }}"
-                     data-filename="{{ img.filename }}">
+                     data-filename="{{ img.filename }}"
+                     data-key="{{ img.key }}">
                 <div class="info">
-                    <p>{{ img.filename }}</p>
-                    <a href="{{ img.download_url }}">&#x2b07; T&eacute;l&eacute;charger</a>
+                    <div>
+                        <p>{{ img.filename }}</p>
+                        <a href="{{ img.download_url }}">&#x2b07; T&eacute;l&eacute;charger</a>
+                    </div>
+                    <button class="btn-delete-card" data-key="{{ img.key }}" title="Supprimer">&#x1f5d1;</button>
                 </div>
             </div>
             {% endfor %}
@@ -110,18 +143,23 @@
         {% endif %}
     </div>
 
-    <!-- Modale fullscreen -->
+    <!-- Modale fullscreen avec slider -->
     <div class="modal-overlay" id="modal">
         <div class="modal-toolbar">
             <button id="btnZoom">&#x1f50d; Taille r&eacute;elle</button>
             <a id="btnDownload" href="#" style="text-decoration:none;">
                 <button>&#x2b07; T&eacute;l&eacute;charger</button>
             </a>
+            <button id="btnDelete" style="background:rgba(231,76,60,0.6); border-color:rgba(231,76,60,0.8);">&#x1f5d1; Supprimer</button>
             <button class="btn-close">&#x2715;</button>
         </div>
+        <button class="slider-arrow prev" id="btnPrev">&#x276E;</button>
+        <button class="slider-arrow next" id="btnNext">&#x276F;</button>
         <div class="modal-img-container" id="modalContainer">
+            <div class="modal-spinner" id="modalSpinner">Chargement...</div>
             <img id="modalImg" class="fit" src="" alt="">
         </div>
+        <div class="modal-counter" id="modalCounter"></div>
     </div>
 
     <script>
@@ -129,29 +167,97 @@
         var modal = document.getElementById("modal");
         var modalImg = document.getElementById("modalImg");
         var modalContainer = document.getElementById("modalContainer");
+        var modalSpinner = document.getElementById("modalSpinner");
+        var modalCounter = document.getElementById("modalCounter");
         var btnZoom = document.getElementById("btnZoom");
         var btnDownload = document.getElementById("btnDownload");
+        var btnPrev = document.getElementById("btnPrev");
+        var btnNext = document.getElementById("btnNext");
         var isFit = true;
-        var LABEL_FIT = "🔍 Taille réelle";
-        var LABEL_FULL = "🔍 Ajuster à l'écran";
+        var currentIndex = -1;
+        var isLoading = false;
 
+        var imageKeys = [];
         document.querySelectorAll(".image-card img[data-view]").forEach(function(img) {
+            imageKeys.push(img.getAttribute("data-key"));
+        });
+
+        function loadImageByIndex(idx) {
+            if (idx < 0 || idx >= imageKeys.length || isLoading) return;
+            currentIndex = idx;
+            isLoading = true;
+            modalSpinner.classList.add("active");
+            modalImg.style.opacity = "0.3";
+            updateCounter();
+            updateArrows();
+
+            fetch("/api/image-url?key=" + encodeURIComponent(imageKeys[idx]))
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.error) throw new Error(data.error);
+                    var tmp = new Image();
+                    tmp.onload = function() {
+                        modalImg.src = data.view_url;
+                        modalImg.alt = data.filename;
+                        btnDownload.href = data.download_url;
+                        modalImg.style.opacity = "1";
+                        modalSpinner.classList.remove("active");
+                        isLoading = false;
+                    };
+                    tmp.onerror = function() {
+                        modalImg.style.opacity = "1";
+                        modalSpinner.classList.remove("active");
+                        isLoading = false;
+                    };
+                    tmp.src = data.view_url;
+                })
+                .catch(function() {
+                    modalSpinner.classList.remove("active");
+                    modalImg.style.opacity = "1";
+                    isLoading = false;
+                });
+        }
+
+        function updateArrows() {
+            btnPrev.disabled = (currentIndex <= 0);
+            btnNext.disabled = (currentIndex >= imageKeys.length - 1);
+        }
+
+        function updateCounter() {
+            modalCounter.textContent = (currentIndex + 1) + " / " + imageKeys.length;
+        }
+
+        document.querySelectorAll(".image-card img[data-view]").forEach(function(img, idx) {
             img.addEventListener("click", function() {
+                currentIndex = idx;
                 modalImg.src = this.getAttribute("data-view");
                 modalImg.alt = this.getAttribute("data-filename");
                 btnDownload.href = this.getAttribute("data-download");
+                modalImg.style.opacity = "1";
                 isFit = true;
                 modalImg.className = "fit";
-                btnZoom.textContent = LABEL_FIT;
+                btnZoom.textContent = "Taille r\u00e9elle";
                 modal.classList.add("active");
                 document.body.style.overflow = "hidden";
+                updateArrows();
+                updateCounter();
             });
+        });
+
+        btnPrev.addEventListener("click", function(e) {
+            e.stopPropagation();
+            if (currentIndex > 0) loadImageByIndex(currentIndex - 1);
+        });
+        btnNext.addEventListener("click", function(e) {
+            e.stopPropagation();
+            if (currentIndex < imageKeys.length - 1) loadImageByIndex(currentIndex + 1);
         });
 
         function doClose() {
             modal.classList.remove("active");
             document.body.style.overflow = "";
             modalImg.src = "";
+            currentIndex = -1;
         }
 
         modal.addEventListener("click", function(e) {
@@ -161,13 +267,47 @@
         document.querySelector(".btn-close").addEventListener("click", doClose);
 
         document.addEventListener("keydown", function(e) {
+            if (!modal.classList.contains("active")) return;
             if (e.key === "Escape") doClose();
+            if (e.key === "ArrowLeft" && currentIndex > 0) loadImageByIndex(currentIndex - 1);
+            if (e.key === "ArrowRight" && currentIndex < imageKeys.length - 1) loadImageByIndex(currentIndex + 1);
         });
 
         btnZoom.addEventListener("click", function() {
             isFit = !isFit;
             modalImg.className = isFit ? "fit" : "full";
-            btnZoom.textContent = isFit ? LABEL_FIT : LABEL_FULL;
+            btnZoom.textContent = isFit ? "Taille r\u00e9elle" : "Ajuster";
+        });
+
+        // Suppression d'image
+        function deleteImage(key) {
+            if (!confirm("Supprimer cette image ? Cette action est irreversible.")) return;
+            fetch("/api/image?key=" + encodeURIComponent(key), { method: "DELETE" })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        window.location.reload();
+                    } else {
+                        alert("Erreur : " + (data.error || "Echec de la suppression"));
+                    }
+                })
+                .catch(function() { alert("Erreur reseau"); });
+        }
+
+        // Bouton supprimer dans la modale
+        var btnDelete = document.getElementById("btnDelete");
+        btnDelete.addEventListener("click", function() {
+            if (currentIndex >= 0 && currentIndex < imageKeys.length) {
+                deleteImage(imageKeys[currentIndex]);
+            }
+        });
+
+        // Boutons supprimer dans les cartes de la galerie
+        document.querySelectorAll(".btn-delete-card[data-key]").forEach(function(btn) {
+            btn.addEventListener("click", function(e) {
+                e.stopPropagation();
+                deleteImage(this.getAttribute("data-key"));
+            });
         });
     })();
     </script>

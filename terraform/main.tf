@@ -183,7 +183,7 @@ resource "aws_iam_role" "ec2_s3_role" {
 # ---------------------------------------------------------------------------
 resource "aws_iam_policy" "s3_access" {
   name        = "image-uploader-s3-policy"
-  description = "Permet a l'EC2 de lire, ecrire et lister les objets dans le bucket images"
+  description = "Permet a l'EC2 de lire, ecrire, supprimer et lister les objets dans le bucket images"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -205,7 +205,9 @@ resource "aws_iam_policy" "s3_access" {
           # Lire un objet (nécessaire pour generate_presigned_url + download)
           "s3:GetObject",
           # Écrire un objet (nécessaire pour upload_fileobj)
-          "s3:PutObject"
+          "s3:PutObject",
+          # Supprimer un objet
+          "s3:DeleteObject"
         ]
         # Ressource = tous les objets DANS le bucket (le /* est important)
         Resource = "${aws_s3_bucket.images.arn}/*"
@@ -235,13 +237,31 @@ resource "aws_iam_instance_profile" "ec2_profile" {
 }
 
 ###############################################################################
+# Déploiement de l'application via S3
+#
+# Le code applicatif (app.py + template HTML) est uploadé dans le bucket S3
+# sous le préfixe deploy/. Le user_data.sh télécharge ces fichiers au boot.
+# Cela évite la limite de 16 Ko du user_data EC2.
+###############################################################################
+resource "aws_s3_object" "app_py" {
+  bucket = aws_s3_bucket.images.id
+  key    = "deploy/app.py"
+  source = "${path.module}/../app/app.py"
+  etag   = filemd5("${path.module}/../app/app.py")
+}
+
+resource "aws_s3_object" "index_html" {
+  bucket = aws_s3_bucket.images.id
+  key    = "deploy/templates/index.html"
+  source = "${path.module}/../app/templates/index.html"
+  etag   = filemd5("${path.module}/../app/templates/index.html")
+}
+
+###############################################################################
 # EC2 Instance — Phase 2 (avec Instance Profile)
 #
-# Le seul changement par rapport à la Phase 1 est l'ajout de :
-#   iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
-#
-# Cela permet à boto3 de récupérer automatiquement les credentials
-# depuis http://169.254.169.254/latest/meta-data/iam/security-credentials/
+# Le user_data télécharge l'app depuis S3 au premier boot.
+# depends_on garantit que les fichiers sont dans S3 avant le boot.
 ###############################################################################
 resource "aws_instance" "app_server" {
   ami                    = data.aws_ami.amazon_linux.id
@@ -255,6 +275,11 @@ resource "aws_instance" "app_server" {
     bucket_name = var.bucket_name
     aws_region  = var.aws_region
   })
+
+  depends_on = [
+    aws_s3_object.app_py,
+    aws_s3_object.index_html,
+  ]
 
   tags = {
     Name = "image-uploader-ec2"
@@ -316,6 +341,7 @@ resource "aws_s3_bucket_policy" "images_policy" {
         Action = [
           "s3:GetObject",
           "s3:PutObject",
+          "s3:DeleteObject",
           "s3:ListBucket"
         ]
         Resource = [
