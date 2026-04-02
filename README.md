@@ -51,21 +51,7 @@ app_url = "http://<IP_PUBLIQUE>"
 Ouvrez cette URL dans votre navigateur. L'application sera accessible après 2-3 minutes
 (temps de boot + installation des paquets).
 
-### 3. Ce qui se passe en Phase 1
-
-- ✅ L'EC2 est créée et l'application Flask tourne sur le port 80
-- ✅ Le bucket S3 est créé (accès public bloqué)
-- ❌ **L'upload échouera** — l'instance EC2 n'a pas de credentials AWS
-- ❌ **La liste des images échouera** — même raison
-
-L'application affichera un message d'erreur clair expliquant qu'il manque les
-permissions IAM. C'est **volontaire** pour illustrer le besoin des politiques d'accès.
-
-## Phase 2 — Ajout des politiques d'accès IAM
-
-> À implémenter ensuite. Voici les éléments qui seront ajoutés :
-
-### Politiques à créer
+### Politiques IAM créées
 
 1. **IAM Role** (`aws_iam_role`)
    - Trust Policy : autorise le service `ec2.amazonaws.com` à assumer ce rôle
